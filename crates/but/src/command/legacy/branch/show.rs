@@ -4,8 +4,8 @@ use but_oxidize::OidExt;
 use colored::Colorize;
 use tracing::instrument;
 
-use super::list::load_id_map;
 use crate::utils::OutputChannel;
+use crate::{CliId, IdMap};
 
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -17,24 +17,14 @@ pub fn show(
     generate_ai_summary: bool,
     check_merge: bool,
 ) -> anyhow::Result<()> {
-    let id_map = load_id_map(&ctx.project_data_dir())?;
-
-    // Find the branch name from the ID
-    let branch_name = if branch_id.len() == 2 {
-        // Lookup by CLI ID
-        id_map
-            .iter()
-            .find(|(_, id)| id.as_str() == branch_id)
-            .map(|(name, _)| name.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Branch ID '{}' not found. Run 'but branch' to see available IDs.",
-                    branch_id
-                )
-            })?
-    } else {
-        // Assume it's a branch name
-        branch_id.to_string()
+    let id_map = IdMap::new_from_context(ctx, None)?;
+    let branch_name = match id_map
+        .parse_using_context(branch_id, ctx)?
+        .into_iter()
+        .find(|id| matches!(id, CliId::Branch { .. }))
+    {
+        Some(CliId::Branch { name, .. }) => name,
+        _ => branch_id.to_string(), // Treat as branch name directly (covers unapplied branches)
     };
 
     // Get the list of commits ahead of base for this branch

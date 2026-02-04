@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 use but_ctx::Context;
 use but_oxidize::OidExt;
@@ -6,41 +6,7 @@ use colored::Colorize;
 use gitbutler_branch_actions::BranchListingFilter;
 
 use crate::utils::OutputChannel;
-
-/// Generate a 2-character CLI ID from an index
-fn generate_cli_id(index: usize) -> String {
-    const CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let base = CHARS.len();
-
-    let first = index / base;
-    let second = index % base;
-
-    format!("{}{}", CHARS[first] as char, CHARS[second] as char)
-}
-
-/// Store the ID map to a file for later lookup
-fn store_id_map(ctx: &Context, id_map: &HashMap<String, String>) -> Result<(), anyhow::Error> {
-    let gb_dir = ctx.project_data_dir();
-    let id_map_path = gb_dir.join("branch_id_map.json");
-    let json_data = serde_json::to_string_pretty(id_map)?;
-    std::fs::write(id_map_path, json_data)?;
-    Ok(())
-}
-
-/// Load the ID map from file
-pub fn load_id_map(project_data_dir: &Path) -> Result<HashMap<String, String>, anyhow::Error> {
-    let id_map_path = project_data_dir.join("branch_id_map.json");
-
-    if !id_map_path.exists() {
-        return Err(anyhow::anyhow!(
-            "Branch ID map not found. Run 'but branch' first to generate IDs."
-        ));
-    }
-
-    let json_data = std::fs::read_to_string(id_map_path)?;
-    let id_map: HashMap<String, String> = serde_json::from_str(&json_data)?;
-    Ok(id_map)
-}
+use crate::IdMap;
 
 #[allow(clippy::too_many_arguments)]
 pub fn list(
@@ -149,27 +115,16 @@ pub fn list(
         None
     };
 
-    // Generate CLI IDs for all branches
-    let mut id_map = HashMap::new();
-    let mut index = 0;
-
-    // Add IDs for applied stacks
-    for stack in &applied_stacks {
-        for head in &stack.heads {
-            let cli_id = generate_cli_id(index);
-            id_map.insert(head.name.to_string(), cli_id);
-            index += 1;
+    // Build display IDs from IdMap for applied stacks
+    let id_map = IdMap::new_from_context(ctx, None)?;
+    let mut display_ids: HashMap<String, String> = HashMap::new();
+    for stack in id_map.stacks() {
+        for segment in &stack.segments {
+            if let Some(branch_name) = segment.branch_name() {
+                display_ids.insert(branch_name.to_string(), segment.short_id.clone());
+            }
         }
     }
-
-    // Add IDs for unapplied branches
-    for branch in &branches_to_show {
-        let cli_id = generate_cli_id(index);
-        id_map.insert(branch.name.to_string(), cli_id);
-        index += 1;
-    }
-
-    store_id_map(ctx, &id_map)?;
 
     if let Some(out) = out.for_json() {
         output_json(
@@ -192,7 +147,7 @@ pub fn list(
                 ctx,
                 commits_ahead_map.as_ref(),
                 merge_status_map.as_ref(),
-                &id_map,
+                &display_ids,
                 out,
             )?;
         }
@@ -208,7 +163,7 @@ pub fn list(
                 &branch_review_map,
                 commits_ahead_map.as_ref(),
                 merge_status_map.as_ref(),
-                &id_map,
+                &display_ids,
                 out,
             )?;
         }
@@ -711,11 +666,11 @@ fn print_branches_table(
 
         let branch_str = format!("{}{}{}", merge_status_str, branch.name, reviews_str);
 
-        // Get CLI ID for this branch
+        // Unapplied branches don't have IdMap short IDs; show "--" to indicate use branch name
         let cli_id = id_map
             .get(&branch.name.to_string())
             .cloned()
-            .unwrap_or_else(|| "??".to_string());
+            .unwrap_or_else(|| "--".to_string());
 
         table.add_row(vec![
             Cell::new(cli_id.dimmed().to_string()),
